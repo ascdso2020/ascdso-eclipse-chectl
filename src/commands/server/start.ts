@@ -19,6 +19,7 @@ import * as path from 'path'
 import { cheDeployment, cheNamespace, listrRenderer } from '../../common-flags'
 import { DEFAULT_CHE_IMAGE, DEFAULT_CHE_OPERATOR_IMAGE } from '../../constants'
 import { CheTasks } from '../../tasks/che'
+import { CertManagerTasks } from '../../tasks/component-installers/cert-manager'
 import { InstallerTasks } from '../../tasks/installers/installer'
 import { K8sTasks } from '../../tasks/platforms/k8s'
 import { PlatformTasks } from '../../tasks/platforms/platform'
@@ -42,6 +43,11 @@ export default class Start extends Command {
       description: 'Path to the templates folder',
       default: Start.getTemplatesDir(),
       env: 'CHE_TEMPLATES_FOLDER'
+    }),
+    resources: string({
+      description: 'Path to the resources folder',
+      env: 'CHE_RESOURCES_FOLDER',
+      default: Start.getResourcesDir()
     }),
     'devfile-registry-url': string({
       description: 'The URL of the external Devfile registry.',
@@ -128,6 +134,18 @@ export default class Start extends Command {
     return path.join(__dirname, '../../../templates')
   }
 
+  static getResourcesDir(): string {
+    // return local resources folder if present
+    const RESOURCES_DIR_NAME = 'resources'
+    const resourcesDirPath = path.resolve(RESOURCES_DIR_NAME)
+    const exists = fs.existsSync(RESOURCES_DIR_NAME)
+    if (exists) {
+      return resourcesDirPath
+    }
+    // else use the location from node modules
+    return path.join(__dirname, '../../../', RESOURCES_DIR_NAME)
+  }
+
   static setPlaformDefaults(flags: any) {
     if (flags.platform === 'minishift') {
       if (!flags.multiuser && flags.installer === '') {
@@ -191,6 +209,7 @@ export default class Start extends Command {
     ctx.directory = path.resolve(flags.directory ? flags.directory : path.resolve(os.tmpdir(), 'chectl-logs', Date.now().toString()))
     const listrOptions: Listr.ListrOptions = { renderer: (flags['listr-renderer'] as any), collapse: false, showSubtasks: true } as Listr.ListrOptions
 
+    const certManagerTasks = new CertManagerTasks(flags)
     const cheTasks = new CheTasks(flags)
     const platformTasks = new PlatformTasks()
     const installerTasks = new InstallerTasks()
@@ -202,6 +221,13 @@ export default class Start extends Command {
     // Checks if Che is already deployed
     let preInstallTasks = new Listr(undefined, listrOptions)
     preInstallTasks.add(k8sTasks.testApiTasks(flags, this))
+    // TODO temporary workaround. Implemented for minikube only.
+    if (flags.platform === 'minikube') {
+      preInstallTasks.add({
+        title: '👀  Setting up Cert Manager',
+        task: () => new Listr(certManagerTasks.deployTasks(flags), listrOptions)
+      })
+    }
     preInstallTasks.add({
       title: '👀  Looking for an already existing Che instance',
       task: () => new Listr(cheTasks.checkIfCheIsInstalledTasks(flags, this))

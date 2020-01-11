@@ -1,5 +1,5 @@
 /*********************************************************************
- * Copyright (c) 2019 Red Hat, Inc.
+ * Copyright (c) 2019-2020 Red Hat, Inc.
  *
  * This program and the accompanying materials are made
  * available under the terms of the Eclipse Public License 2.0
@@ -8,16 +8,19 @@
  * SPDX-License-Identifier: EPL-2.0
  **********************************************************************/
 
-import { ApiextensionsV1beta1Api, ApisApi, AppsV1Api, CoreV1Api, CustomObjectsApi, ExtensionsV1beta1Api, KubeConfig, Log, RbacAuthorizationV1Api, V1beta1CustomResourceDefinition, V1beta1IngressList, V1ClusterRole, V1ClusterRoleBinding, V1ConfigMap, V1ConfigMapEnvSource, V1Container, V1DeleteOptions, V1Deployment, V1DeploymentList, V1DeploymentSpec, V1EnvFromSource, V1LabelSelector, V1ObjectMeta, V1PersistentVolumeClaimList, V1Pod, V1PodList, V1PodSpec, V1PodTemplateSpec, V1Role, V1RoleBinding, V1RoleRef, V1Secret, V1ServiceAccount, V1ServiceList, V1Subject } from '@kubernetes/client-node'
+import { ApiextensionsV1beta1Api, ApisApi, AppsV1Api, BatchV1Api, CoreV1Api, CustomObjectsApi, ExtensionsV1beta1Api, KubeConfig, Log, RbacAuthorizationV1Api, V1beta1CustomResourceDefinition, V1beta1IngressList, V1ClusterRole, V1ClusterRoleBinding, V1ConfigMap, V1ConfigMapEnvSource, V1Container, V1DeleteOptions, V1Deployment, V1DeploymentList, V1DeploymentSpec, V1EnvFromSource, V1Job, V1JobSpec, V1LabelSelector, V1ObjectMeta, V1PersistentVolumeClaimList, V1Pod, V1PodList, V1PodSpec, V1PodTemplateSpec, V1Role, V1RoleBinding, V1RoleRef, V1Secret, V1ServiceAccount, V1ServiceList, V1Subject } from '@kubernetes/client-node'
 import { Context } from '@kubernetes/client-node/dist/config_types'
 import axios from 'axios'
 import { cli } from 'cli-ux'
+import * as execa from 'execa'
 import * as fs from 'fs'
 import https = require('https')
 import * as yaml from 'js-yaml'
 import { Writable } from 'stream'
 
 import { DEFAULT_CHE_IMAGE } from '../constants'
+
+import { V1alpha2Sertificate } from './typings/cert-manager'
 
 export class KubeHelper {
   kc = new KubeConfig()
@@ -58,6 +61,16 @@ export class KubeHelper {
     } catch (e) {
       throw this.wrapK8sClientError(e)
     }
+  }
+
+  async applyResource(yamlPath: string): Promise<void> {
+    const yamlContent = fs.readFileSync(yamlPath, 'utf8')
+    await this.applyYaml(yamlContent)
+  }
+
+  async applyYaml(yaml: string): Promise<void> {
+    const command = `echo "${yaml}" | kubectl apply -f -`
+    await execa(command, { timeout: 30000, shell: true })
   }
 
   async getServicesBySelector(labelSelector = '', namespace = ''): Promise<V1ServiceList> {
@@ -423,6 +436,23 @@ export class KubeHelper {
       await k8sCoreApi.deleteNamespacedConfigMap(name, namespace, undefined, options)
     } catch (e) {
       throw this.wrapK8sClientError(e)
+    }
+  }
+
+  async namespaceExist(namespace: string) {
+    this.kc.loadFromDefault()
+    const k8sApi = this.kc.makeApiClient(CoreV1Api)
+    try {
+      const res = await k8sApi.readNamespace(namespace)
+      if (res && res.body &&
+        res.body.metadata && res.body.metadata.name
+        && res.body.metadata.name === namespace) {
+        return true
+      } else {
+        return false
+      }
+    } catch {
+      return false
     }
   }
 
@@ -844,7 +874,6 @@ export class KubeHelper {
     pod.metadata.labels = { app: name }
     pod.metadata.namespace = namespace
     pod.spec = new V1PodSpec()
-    pod.spec.containers
     pod.spec.restartPolicy = restartPolicy
     pod.spec.serviceAccountName = serviceAccount
     let opContainer = new V1Container()
@@ -859,6 +888,36 @@ export class KubeHelper {
 
     try {
       return await k8sCoreApi.createNamespacedPod(namespace, pod)
+    } catch (e) {
+      throw this.wrapK8sClientError(e)
+    }
+  }
+
+  async createJob(name: string,
+                  image: string,
+                  serviceAccount: string,
+                  pullPolicy: string,
+                  namespace: string) {
+    const k8sBatchApi = this.kc.makeApiClient(BatchV1Api)
+
+    const job = new V1Job()
+    job.metadata = new V1ObjectMeta()
+    job.metadata.name = name
+    job.metadata.labels = { app: name }
+    job.metadata.namespace = namespace
+    job.spec = new V1JobSpec()
+    job.spec.ttlSecondsAfterFinished = 10
+    job.spec.template = new V1PodTemplateSpec()
+    job.spec.template.spec = new V1PodSpec()
+    job.spec.template.spec.serviceAccountName = serviceAccount
+    const jobContainer = new V1Container()
+    jobContainer.name = name
+    jobContainer.image = image
+    jobContainer.imagePullPolicy = pullPolicy
+    job.spec.template.spec.containers = [jobContainer]
+
+    try {
+      return await k8sBatchApi.createNamespacedJob(namespace, job)
     } catch (e) {
       throw this.wrapK8sClientError(e)
     }
@@ -915,7 +974,7 @@ export class KubeHelper {
     }
   }
 
-  async crdExist(name = ''): Promise<boolean | ''> {
+  async crdExist(name = ''): Promise<boolean> {
     const k8sApiextensionsApi = this.kc.makeApiClient(ApiextensionsV1beta1Api)
     try {
       const { body } = await k8sApiextensionsApi.readCustomResourceDefinition(name)
@@ -1022,6 +1081,14 @@ export class KubeHelper {
     } catch (e) {
       throw this.wrapK8sClientError(e)
     }
+  }
+
+  async createCheClusterCertificate(certificateTemplatePath: string, domain: string): Promise<void> {
+    const certifiate = this.safeLoadFromYamlFile(certificateTemplatePath) as V1alpha2Sertificate
+    certifiate.spec.commonName = domain
+    certifiate.spec.dnsNames = [domain]
+    const certificateYaml = yaml.safeDump(certifiate)
+    await this.applyYaml(certificateYaml)
   }
 
   async currentContext(): Promise<string> {
