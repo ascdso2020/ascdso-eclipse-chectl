@@ -34,7 +34,7 @@
     "lodash": "^4.17.21",
     "node-forge": "^1.2.1",
     "node-notifier": "^10.0.0",
-    "os-locale": "^5.0.0",
+    "os-locale": "^6.0.2",
     "rimraf": "^3.0.2",
     "semver": "^7.3.4",
     "unzipper": "0.10.11",
